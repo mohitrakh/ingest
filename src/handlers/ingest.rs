@@ -1,22 +1,22 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 use axum::{
     Json,
     extract::{Query, State},
     http::StatusCode,
 };
-use serde_json::{Value, json};
 use sqlx::PgPool;
 
-use crate::types::{AnalyticsQuery, AnalyticsResult, IngestEvent};
-
-static INSERT_COUNTER: AtomicU64 = AtomicU64::new(0);
+use crate::{
+    AppState, INSERT_COUNTER,
+    types::{AnalyticsQuery, AnalyticsResult, IngestEvent},
+};
 
 pub async fn ingest_event(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
     Json(payload): Json<IngestEvent>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    INSERT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let start = std::time::Instant::now();
     if payload.entity_id.trim().is_empty() {
         return Err((StatusCode::BAD_REQUEST, "entity_id cannot be empty".into()));
     }
@@ -39,11 +39,17 @@ pub async fn ingest_event(
         payload.timestamp,
         payload.tags
     )
-    .execute(&pool)
+    .execute(&state.db)
     .await;
 
+    let duration = start.elapsed();
+    println!("Latency: {:?}", duration);
+
     match result {
-        Ok(_) => Ok(StatusCode::CREATED),
+        Ok(_) => {
+            INSERT_COUNTER.fetch_add(1, Ordering::Relaxed);
+            Ok(StatusCode::CREATED)
+        }
         Err(e) => {
             eprintln!("DB Error: {:?}", e);
             Err((StatusCode::INTERNAL_SERVER_ERROR, "Database error".into()))
@@ -52,7 +58,7 @@ pub async fn ingest_event(
 }
 
 pub async fn analytics_handler(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
     Query(params): Query<AnalyticsQuery>,
 ) -> Result<Json<Vec<AnalyticsResult>>, (StatusCode, String)> {
     if params.metric.trim().is_empty() {
@@ -125,7 +131,7 @@ pub async fn analytics_handler(
         .bind(params.metric)
         .bind(params.from)
         .bind(params.to)
-        .fetch_all(&pool)
+        .fetch_all(&state.db)
         .await
         .map_err(|e| {
             eprintln!("DB error: {:?}", e);

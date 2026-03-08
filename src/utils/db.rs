@@ -9,7 +9,7 @@ pub async fn connect_to_db() -> PgPool {
     println!("Database URL: {}", database_url);
 
     let pool = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(250)
         .connect(&database_url)
         .await
         .expect("Failed to create database connection pool");
