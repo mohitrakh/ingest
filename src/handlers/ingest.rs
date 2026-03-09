@@ -5,7 +5,6 @@ use axum::{
     extract::{Query, State},
     http::StatusCode,
 };
-use sqlx::PgPool;
 
 use crate::{
     AppState, INSERT_COUNTER,
@@ -28,33 +27,14 @@ pub async fn ingest_event(
         ));
     }
 
-    let result = sqlx::query!(
-        r#"
-        INSERT INTO events (entity_id, metric_name, metric_value, timestamp, tags)
-        VALUES ($1, $2, $3, $4, $5)
-        "#,
-        payload.entity_id,
-        payload.metric_name,
-        payload.metric_value,
-        payload.timestamp,
-        payload.tags
-    )
-    .execute(&state.db)
-    .await;
-
-    let duration = start.elapsed();
-    println!("Latency: {:?}", duration);
-
-    match result {
-        Ok(_) => {
-            INSERT_COUNTER.fetch_add(1, Ordering::Relaxed);
-            Ok(StatusCode::CREATED)
-        }
-        Err(e) => {
-            eprintln!("DB Error: {:?}", e);
-            Err((StatusCode::INTERNAL_SERVER_ERROR, "Database error".into()))
-        }
+    if state.sender.send(payload).await.is_err() {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Something went wrong!".into(),
+        ));
     }
+    // latency logging
+    Ok(StatusCode::ACCEPTED)
 }
 
 pub async fn analytics_handler(

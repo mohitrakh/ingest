@@ -1,0 +1,3 @@
+ALTER TABLE events
+ADD COLUMN region TEXT,
+ADD COLUMN env TEXT;

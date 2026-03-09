@@ -3,13 +3,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{prelude::FromRow, types::BigDecimal};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct IngestEvent {
     pub entity_id: String,
     pub metric_name: String,
-    pub metric_value: BigDecimal,
+    pub metric_value: f64,
     pub timestamp: DateTime<Utc>,
-    pub tags: Option<Value>,
+    pub region: String,
+    pub env: String,
 }
 
 #[derive(Deserialize)]

@@ -17,6 +17,7 @@ use crate::{
     utils::{
         buffer::{EventSender, create_buffer},
         db::connect_to_db,
+        worker::worker,
     },
 };
 mod utils;
@@ -33,7 +34,9 @@ pub struct AppState {
 async fn main() {
     dotenv().ok();
     let (tx, rx) = create_buffer(10_000);
+
     let pool = connect_to_db().await;
+    tokio::spawn(worker(rx, pool.clone()));
     let state = AppState {
         db: pool,
         sender: tx,
