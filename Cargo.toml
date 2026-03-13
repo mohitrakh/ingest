@@ -15,3 +15,4 @@ tokio = {version = "1.49.0", features = ["full"]}
 uuid = { version = "1.21.0", features = ["v4", "serde"] }
 validator = { version = "0.20.0", features = ["derive"] }
 bigdecimal = { version = "0.4", features = ["serde"] } 
+bytes = "1.11.1"

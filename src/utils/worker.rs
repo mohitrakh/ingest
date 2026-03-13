@@ -9,8 +9,10 @@ use tokio::sync::mpsc::Receiver;
 
 use crate::{INSERT_COUNTER, types::IngestEvent};
 
-const BATCH_SIZE: usize = 10000;
+const BATCH_SIZE: usize = 50000;
 const FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+
+const PG_EPOCH_OFFSET_MICROS: i64 = 946_684_800_000_000;
 
 pub async fn worker(mut rx: Receiver<IngestEvent>, pool: PgPool) {
     let mut batch: Vec<IngestEvent> = Vec::with_capacity(BATCH_SIZE);
@@ -43,22 +45,7 @@ async fn flush_batch(pool: &PgPool, batch: &mut Vec<IngestEvent>) {
         return;
     }
 
-    let mut csv_data = String::with_capacity(batch.len() * 96);
-
-    for event in batch.iter() {
-        let entity_id = escape_csv(&event.entity_id);
-        let metric_name = escape_csv(&event.metric_name);
-        let region = escape_csv(&event.region);
-        let env = escape_csv(&event.env);
-
-        writeln!(
-            &mut csv_data,
-            "{},{},{},{},{},{}",
-            entity_id, metric_name, event.metric_value, event.timestamp, region, env,
-        )
-        .unwrap();
-    }
-
+    let payload = build_binary_payload(batch);
     let mut conn = match pool.acquire().await {
         Ok(c) => c,
         Err(e) => {
@@ -67,7 +54,7 @@ async fn flush_batch(pool: &PgPool, batch: &mut Vec<IngestEvent>) {
         }
     };
 
-    if let Err(e) = do_copy(&mut conn, csv_data.as_bytes()).await {
+    if let Err(e) = do_copy(&mut conn, payload).await {
         eprintln!("COPY failed: {:?}", e);
         return;
     }
@@ -77,36 +64,74 @@ async fn flush_batch(pool: &PgPool, batch: &mut Vec<IngestEvent>) {
     batch.clear();
 }
 
-/// Escape a string field for CSV: wrap in quotes and double any internal quotes.
-fn escape_csv(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') {
-        format!("\"{}\"", s.replace('"', "\"\""))
-    } else {
-        s.to_string()
+use bytes::{BufMut, Bytes, BytesMut};
+
+// Replace your csv_data string with this
+fn build_binary_payload(batch: &[IngestEvent]) -> Bytes {
+    // Rough capacity: header(19) + trailer(2) + per row ~80 bytes
+    let mut buf = BytesMut::with_capacity(19 + 2 + batch.len() * 80);
+
+    // ── File header ──────────────────────────────────────────
+    buf.put_slice(b"PGCOPY\n\xff\r\n\0"); // magic, exactly 11 bytes
+    buf.put_i32(0); // flags: no OIDs
+    buf.put_i32(0); // header extension area length
+
+    // ── Tuples ───────────────────────────────────────────────
+    for event in batch {
+        buf.put_i16(6); // number of fields in this row
+        let pg_micros = event.timestamp.timestamp_micros() - PG_EPOCH_OFFSET_MICROS;
+        // entity_id — text, raw UTF-8
+        let b = event.entity_id.as_bytes();
+        buf.put_i32(b.len() as i32);
+        buf.put_slice(b);
+
+        // metric_name — text
+        let b = event.metric_name.as_bytes();
+        buf.put_i32(b.len() as i32);
+        buf.put_slice(b);
+
+        // metric_value — float8 (f64), 8 bytes big-endian
+        buf.put_i32(8);
+        buf.put_f64(event.metric_value);
+
+        // timestamp — int8 (i64), 8 bytes big-endian
+        buf.put_i32(8);
+        buf.put_i64(pg_micros);
+
+        // region — text
+        let b = event.region.as_bytes();
+        buf.put_i32(b.len() as i32);
+        buf.put_slice(b);
+
+        // env — text
+        let b = event.env.as_bytes();
+        buf.put_i32(b.len() as i32);
+        buf.put_slice(b);
     }
+
+    // ── File trailer ─────────────────────────────────────────
+    buf.put_i16(-1);
+
+    buf.freeze()
 }
 
-async fn do_copy(conn: &mut PgConnection, data: &[u8]) -> Result<(), sqlx::Error> {
+async fn do_copy(conn: &mut PgConnection, data: Bytes) -> Result<(), sqlx::Error> {
     let mut copy = conn
         .copy_in_raw(
             "COPY events (
-        entity_id,
-        metric_name,
-        metric_value,
-        timestamp,
-        region,
-        env
-    )
-    FROM STDIN WITH (FORMAT csv, DELIMITER ',', NULL '')",
+                entity_id,
+                metric_name,
+                metric_value,
+                timestamp,
+                region,
+                env
+            )
+            FROM STDIN WITH (FORMAT binary)", // ← only change here
         )
         .await?;
 
-    // Send data in chunks — avoids holding the entire buffer in one syscall
     copy.send(data).await?;
-
-    // Finish the COPY stream; this commits the data to Postgres
     let rows_inserted = copy.finish().await?;
-
     println!("COPY inserted {} rows", rows_inserted);
     Ok(())
 }

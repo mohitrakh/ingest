@@ -1802,6 +1802,7 @@ dependencies = [
  "async-trait",
  "axum",
  "bigdecimal",
+ "bytes",
  "chrono",
  "dotenvy",
  "serde",
