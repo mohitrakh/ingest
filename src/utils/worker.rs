@@ -135,3 +135,42 @@ async fn do_copy(conn: &mut PgConnection, data: Bytes) -> Result<(), sqlx::Error
     println!("COPY inserted {} rows", rows_inserted);
     Ok(())
 }
+
+pub async fn partition_worker(pool: PgPool) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+
+    loop {
+        interval.tick().await;
+
+        let tomorrow = chrono::Utc::now() + chrono::Duration::days(1);
+        let start = tomorrow.format("%Y-%m-%d").to_string();
+        let end = (tomorrow + chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let table_name = tomorrow.format("events_%Y_%m_%d");
+
+        let query = format!(
+            "CREATE TABLE IF NOT EXISTS {} PARTITION OF events
+             FOR VALUES FROM ('{}') TO ('{}')",
+            table_name, start, end
+        );
+
+        let _ = sqlx::query(&query).execute(&pool).await;
+    }
+}
+
+pub async fn retention_worker(pool: PgPool) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
+
+    loop {
+        interval.tick().await;
+
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(7);
+        let table = cutoff.format("events_%Y_%m_%d");
+
+        let query = format!("DROP TABLE IF EXISTS {}", table);
+
+        let _ = sqlx::query(&query).execute(&pool).await;
+    }
+}

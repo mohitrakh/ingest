@@ -17,7 +17,7 @@ use crate::{
     utils::{
         buffer::{EventSender, create_buffer},
         db::connect_to_db,
-        worker::worker,
+        worker::{partition_worker, retention_worker, worker},
     },
 };
 mod utils;
@@ -37,6 +37,8 @@ async fn main() {
 
     let pool = connect_to_db().await;
     tokio::spawn(worker(rx, pool.clone()));
+    tokio::spawn(partition_worker(pool.clone()));
+    tokio::spawn(retention_worker(pool.clone()));
     let state = AppState {
         db: pool,
         sender: tx,
